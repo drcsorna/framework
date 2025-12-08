@@ -103,11 +103,14 @@ This shows **81 DMCUB errors in 7 days** (approximately 11-12 occurrences per da
 The issue is caused by a bug in the AMD GPU driver's Panel Self Refresh (PSR) implementation:
 
 1. **PSR** is a power-saving feature that allows the display to refresh itself without constant GPU involvement
-2. During **suspend/resume cycles**, the DMCUB firmware fails to properly reinitialize when PSR is enabled
-3. This causes the display microcontroller to crash, leading to:
+2. **PSC (Panel Self-Control)** works in conjunction with PSR and is also affected by this bug
+3. During **suspend/resume cycles**, the DMCUB firmware fails to properly reinitialize when PSR is enabled
+4. This causes the display microcontroller to crash, leading to:
    - Display timeout errors (`flip_done timed out`)
    - Complete system freeze
    - Loss of all display functionality
+
+**Note:** Disabling PSR with the `dcdebugmask` parameter also implicitly disables PSC, as both are part of the same power management subsystem.
 
 ### Known Issue
 
@@ -125,6 +128,36 @@ This is a **confirmed widespread bug** affecting Framework 13 AMD laptops across
 
 ---
 
+## Troubleshooting Flowchart
+
+```
+System freezes on resume from suspend
+          ↓
+Check journal: journalctl -b -1 | grep DMCUB
+          ↓
+     DMCUB errors found?
+          ↓
+        YES → Apply primary fix: amdgpu.dcdebugmask=0x10
+          ↓
+    Reboot and test
+          ↓
+    Still freezing?
+          ↓
+   NO → Success! Monitor for 7 days
+   YES → Apply additional parameter: amdgpu.force_long_wakeup=1
+          ↓
+    Reboot and test again
+          ↓
+    Still freezing?
+          ↓
+   NO → Success! Monitor for 7 days
+   YES → Check for other issues (thermal, hardware)
+          ↓
+    Report to Framework Community with full logs
+```
+
+---
+
 ## Solution
 
 ### Immediate Fix (Workaround)
@@ -136,6 +169,17 @@ sudo grubby --update-kernel=ALL --args="amdgpu.dcdebugmask=0x10"
 sudo reboot
 ```
 
+### Optional: Additional Resume Stability Parameter
+
+If you continue to experience occasional resume issues even with PSR disabled, you can add an additional parameter that improves resume stability:
+
+```bash
+sudo grubby --update-kernel=ALL --args="amdgpu.force_long_wakeup=1"
+sudo reboot
+```
+
+**Note:** This is not necessary for most users - only add if you still see problems after applying the primary fix.
+
 ### Verification
 
 After reboot, confirm the parameter is applied:
@@ -146,11 +190,16 @@ cat /proc/cmdline | grep dcdebugmask
 
 Expected output should include: `amdgpu.dcdebugmask=0x10`
 
+If you also applied the optional parameter:
+```bash
+cat /proc/cmdline | grep -E "dcdebugmask|force_long_wakeup"
+```
+
 ### Trade-offs
 
 - **Benefit:** Eliminates suspend/resume freezes completely
 - **Cost:** Slightly increased power consumption (approximately 5-10% battery impact)
-- **Safety:** No other side effects; only disables PSR feature
+- **Safety:** No other side effects; only disables PSR/PSC features
 
 ---
 
@@ -199,7 +248,7 @@ journalctl --since "today" | grep -c "DMCUB error"
 - **Kernel 6.19+ or later** (based on typical patch integration timelines)
 - Release notes mention "AMD PSR fix" or "DMCUB resume improvements"
 - Framework community reports successful testing without workaround
-- BIOS updates specifically addressing suspend/resume issues
+- **Note:** BIOS updates alone (including 3.17+) will NOT fix this issue - the fix must come from kernel driver updates and AMD firmware improvements. BIOS updates may help with other issues, but cannot resolve PSR-related DMCUB crashes.
 
 ### Testing Procedure
 
@@ -223,7 +272,16 @@ If system freezes before applying the fix:
 
 ```bash
 ssh user@hostname
+# Try DRI device 1 first (most common on FW13 AMD)
 sudo cat /sys/kernel/debug/dri/1/amdgpu_gpu_recover
+
+# If that fails, try DRI device 0
+sudo cat /sys/kernel/debug/dri/0/amdgpu_gpu_recover
+```
+
+**Note:** The DRI device number may vary. If unsure, check which exists:
+```bash
+ls -la /sys/kernel/debug/dri/
 ```
 
 ### Hard Reboot
@@ -251,14 +309,21 @@ If SSH is not available, use Magic SysRq keys:
 
 ## Command Reference
 
-### Apply fix
+### Apply primary fix
 ```bash
 sudo grubby --update-kernel=ALL --args="amdgpu.dcdebugmask=0x10"
+```
+
+### Apply optional stability fix (if needed)
+```bash
+sudo grubby --update-kernel=ALL --args="amdgpu.force_long_wakeup=1"
 ```
 
 ### Verify fix
 ```bash
 cat /proc/cmdline | grep dcdebugmask
+# Or check both parameters
+cat /proc/cmdline | grep -E "dcdebugmask|force_long_wakeup"
 ```
 
 ### Monitor errors
@@ -266,9 +331,23 @@ cat /proc/cmdline | grep dcdebugmask
 journalctl --since "today" | grep "DMCUB error"
 ```
 
+### Check DRI device paths
+```bash
+ls -la /sys/kernel/debug/dri/
+```
+
+### GPU recovery via SSH (emergency)
+```bash
+sudo cat /sys/kernel/debug/dri/1/amdgpu_gpu_recover
+# or
+sudo cat /sys/kernel/debug/dri/0/amdgpu_gpu_recover
+```
+
 ### Remove fix (when upstream patch available)
 ```bash
 sudo grubby --update-kernel=ALL --remove-args="amdgpu.dcdebugmask=0x10"
+# If you also added the optional parameter
+sudo grubby --update-kernel=ALL --remove-args="amdgpu.force_long_wakeup=1"
 ```
 
 ---
